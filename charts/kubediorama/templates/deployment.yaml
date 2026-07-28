@@ -1,0 +1,212 @@
+# ==============================================================================
+# KubeDiorama — Deployment Manifest
+#
+# This Deployment runs a single pod containing the KubeDiorama Go daemon,
+# which simultaneously serves:
+#   1. The React Three Fiber 3D UI (compiled static assets via Go HTTP)
+#   2. The WebSocket server (ws://...:8080) for real-time K8s event streaming
+#   3. The DVR ring buffer (in-memory, 10 minutes of cluster state)
+#   4. Optional eBPF TCP socket tracing (requires elevated Linux capabilities)
+#
+# SECURITY CONTEXT DEEP DIVE:
+# ─────────────────────────────────────────────────────────────────────────────
+# The most security-sensitive part of this deployment is the securityContext.
+# KubeDiorama's eBPF TCP tracer requires direct interaction with Linux kernel
+# subsystems (BPF maps, perf event rings, raw network sockets). There are two
+# approaches, both controlled by values.yaml:
+#
+#   Option A — Fine-Grained Capabilities (RECOMMENDED when ebpf.privileged=false):
+#     CAP_BPF:       Load BPF programs and access BPF maps. Required for the
+#                    cilium/ebpf library to compile and attach kprobes.
+#     CAP_PERFMON:   Access perf event file descriptors used by BPF to sample
+#                    kernel events (TCP connect, accept, close).
+#     CAP_NET_ADMIN: Create raw sockets and attach BPF programs to network
+#                    interfaces for packet-level observation.
+#     CAP_SYS_ADMIN: Required on kernels < 5.8 where CAP_BPF did not yet exist.
+#                    On modern kernels (5.8+), prefer CAP_BPF over CAP_SYS_ADMIN.
+#
+#   Option B — Privileged Mode (SIMPLE but BROAD when ebpf.privileged=true):
+#     privileged: true grants ALL Linux capabilities. Use only on dedicated
+#     dev/lab clusters where security posture is less critical.
+#
+#   Option C — No eBPF (ebpf.enabled=false, DEFAULT):
+#     Runs without any elevated capabilities. The Go agent falls back to the
+#     built-in mock traffic simulator. Zero security concerns. Recommended for
+#     managed Kubernetes services (GKE Autopilot, EKS Fargate, AKS Virtual Nodes)
+#     that block eBPF system calls via seccomp profiles.
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubediorama.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubediorama.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # KubeDiorama's DVR ring buffer is in-memory, so multiple replicas will not
+  # share state. Keep replicas: 1 unless you implement a shared state backend.
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kubediorama.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubediorama.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force pod restart when values.yaml changes (e.g., enableChaos toggled).
+        checksum/config: {{ toJson .Values | sha256sum }}
+    spec:
+      # ── Service Account ─────────────────────────────────────────────────────
+      # Bind the pod to the dedicated KubeDiorama ServiceAccount created in
+      # rbac.yaml. This ServiceAccount carries the ClusterRole token that
+      # allows the Go daemon to call the Kubernetes API.
+      serviceAccountName: {{ include "kubediorama.serviceAccountName" . }}
+
+      # ── Pod Security Context ─────────────────────────────────────────────────
+      # Applied at pod level. When eBPF privileged mode is required, we must
+      # allow runAsNonRoot: false because privileged containers run as root.
+      securityContext:
+        {{- if .Values.ebpf.privileged }}
+        # Privileged eBPF mode: allow root (required for kernel BPF access).
+        runAsNonRoot: false
+        {{- else }}
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- end }}
+
+      containers:
+        - name: kubediorama
+          # ── Image ────────────────────────────────────────────────────────────
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          # ── Ports ────────────────────────────────────────────────────────────
+          ports:
+            # Port 8080: The Go HTTP server serves both the static 3D UI assets
+            # and the WebSocket upgrade endpoint (ws://<host>:8080) on a single
+            # port for simplicity. The Service maps :80 -> :8080.
+            - name: http-ws
+              containerPort: 8080
+              protocol: TCP
+
+          # ── Environment Variables ────────────────────────────────────────────
+          env:
+            # Controls whether the Chaos Executor goroutines (Meteor, Black Hole,
+            # Flood) are active. Mirrors the Helm enableChaos value at runtime.
+            - name: KUBEDIORAMA_CHAOS_ENABLED
+              value: {{ .Values.enableChaos | quote }}
+
+            # Controls whether the eBPF TCP tracer is loaded. When false, the
+            # daemon runs the built-in mock traffic simulator instead.
+            - name: KUBEDIORAMA_EBPF_ENABLED
+              value: {{ .Values.ebpf.enabled | quote }}
+
+            # The namespace the agent is deployed into (used for scoped logging).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            # The pod's own name (used in DVR ring buffer metadata).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          # ── Container Security Context ───────────────────────────────────────
+          # This is where eBPF privilege requirements are handled.
+          # We evaluate three distinct scenarios (A, B, C) as documented above.
+          securityContext:
+            {{- if .Values.ebpf.privileged }}
+            # ── Option B: Full Privileged Mode ─────────────────────────────────
+            # Grants all Linux capabilities. Simple but broad.
+            # USE ONLY ON DEV/LAB CLUSTERS. Review with your security team first.
+            privileged: true
+            {{- else if .Values.ebpf.enabled }}
+            # ── Option A: Fine-Grained Linux Capabilities (RECOMMENDED) ────────
+            # Grants the minimal Linux kernel capabilities required for eBPF
+            # without granting full privileged mode.
+            privileged: false
+            capabilities:
+              add:
+                # CAP_BPF: Core capability for loading BPF programs (kernel 5.8+).
+                # Allows sys_bpf() syscall — required by cilium/ebpf library.
+                - CAP_BPF
+                # CAP_PERFMON: Access perf_event_open() for BPF perf buffers.
+                # Required to attach BPF programs to perf events (kernel 5.8+).
+                - CAP_PERFMON
+                # CAP_NET_ADMIN: Attach BPF programs to network interfaces.
+                # Required for TC (Traffic Control) BPF hooks on pods.
+                - CAP_NET_ADMIN
+                # CAP_SYS_ADMIN: Fallback for kernels < 5.8 that don't have
+                # CAP_BPF/CAP_PERFMON as distinct capabilities. On modern nodes
+                # this can be removed in favor of the above two.
+                - CAP_SYS_ADMIN
+              drop:
+                # Drop ALL other capabilities not explicitly added above.
+                # This is defense-in-depth: if the container is compromised,
+                # capabilities like CAP_NET_RAW, CAP_CHOWN etc. are unavailable.
+                - ALL
+            {{- else }}
+            # ── Option C: No eBPF — Zero Elevated Privileges (DEFAULT) ─────────
+            # Fully unprivileged container. Runs the mock traffic simulator.
+            # Safe for all Kubernetes environments including managed services.
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            {{- end }}
+
+          # ── Health Probes ────────────────────────────────────────────────────
+          # The Go agent exposes /healthz for liveness and /readyz for readiness.
+          # These ensure the pod is recycled if the WebSocket server hangs.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-ws
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-ws
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # ── Resource Limits ──────────────────────────────────────────────────
+          # The Go daemon is lightweight for small/medium clusters.
+          # Increase CPU limits for large clusters (500+ pods) where the Informer
+          # cache and DVR ring buffer serialization may spike briefly.
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      # ── Scheduling Controls ──────────────────────────────────────────────────
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

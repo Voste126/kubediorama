@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubediorama.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubediorama.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "kubediorama.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-ws
+      protocol: TCP
+      # External port on the Service (port 80 by default for clean URLs).
+      # After install, port-forward with:
+      #   kubectl port-forward svc/{{ include "kubediorama.fullname" . }} 8080:80
+      # Then open http://localhost:8080 in your browser!
+      port: {{ .Values.service.port }}
+      # Maps to the container's Go HTTP + WebSocket server port (8080).
+      targetPort: {{ .Values.service.targetPort }}

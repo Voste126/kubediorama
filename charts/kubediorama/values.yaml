@@ -1,0 +1,124 @@
+# ==============================================================================
+# KubeDiorama (ChaosWeaver) — Helm Chart Values
+#
+# All values here are overridable via --set or -f custom-values.yaml.
+# Default values target a lightweight local development experience.
+# ==============================================================================
+
+# ----------------------------------------------------------------------------
+# Global image configuration for the KubeDiorama monorepo container.
+# The single image contains both the Go agent (port 8080) and the compiled
+# React Three Fiber UI (served as static files via the Go HTTP server).
+# ----------------------------------------------------------------------------
+image:
+  # Repository hosting the KubeDiorama all-in-one container image.
+  repository: ghcr.io/kubediorama/kubediorama
+  # Image pull policy. Use "Always" in production to ensure latest digest.
+  pullPolicy: IfNotPresent
+  # Overrides the image tag. Defaults to the chart's appVersion.
+  tag: ""
+
+# ----------------------------------------------------------------------------
+# Deployment replica configuration.
+# The KubeDiorama agent is stateful (maintains DVR ring buffer in-memory),
+# so replicas > 1 will result in independent visualizer instances.
+# Horizontal scaling via a shared Redis/etcd ring buffer is on the roadmap.
+# ----------------------------------------------------------------------------
+replicaCount: 1
+
+# ----------------------------------------------------------------------------
+# Service configuration for exposing the combined UI + WebSocket endpoint.
+# ----------------------------------------------------------------------------
+service:
+  # ClusterIP keeps the service internal; use kubectl port-forward to access.
+  # Change to LoadBalancer or NodePort to expose externally.
+  type: ClusterIP
+  # External port exposed on the Service.
+  port: 80
+  # Container port inside the pod (Go HTTP server + WebSocket on one port).
+  targetPort: 8080
+
+# ----------------------------------------------------------------------------
+# RBAC / ServiceAccount configuration.
+# KubeDiorama requires a dedicated ServiceAccount with cluster-wide read
+# access for visualization and optional write access for Chaos Spells.
+# ----------------------------------------------------------------------------
+serviceAccount:
+  # If true, creates a dedicated ServiceAccount for KubeDiorama.
+  create: true
+  # Override the ServiceAccount name. Defaults to release name if empty.
+  name: ""
+  # Additional annotations to add to the ServiceAccount (e.g., for IRSA/WIF).
+  annotations: {}
+
+# ----------------------------------------------------------------------------
+# Chaos Spells Master Switch.
+#
+# ⚠️  IMPORTANT: Set enableChaos: false in PRODUCTION clusters unless you
+# explicitly want "The Meteor" (pod deletion), "Black Hole" (NetworkPolicy
+# injection), and "The Flood" (DDoS simulation) to be available.
+#
+# When enableChaos: false, the ClusterRole is created in read-only mode and
+# the daemon's Chaos Executor goroutines are disabled via POD_CHAOS_ENABLED=false.
+# ----------------------------------------------------------------------------
+enableChaos: true
+
+# ----------------------------------------------------------------------------
+# eBPF kernel-level network tracing configuration.
+#
+# ⚠️  IMPORTANT: eBPF requires elevated Linux kernel capabilities (CAP_BPF,
+# CAP_PERFMON, CAP_NET_ADMIN) or the container must run as privileged.
+# Set ebpf.enabled: false to run in simulation/mock traffic mode — safe for
+# managed Kubernetes services (GKE Autopilot, EKS Fargate) that block eBPF.
+# ----------------------------------------------------------------------------
+ebpf:
+  # If true: runs the eBPF TCP tracer; requires privileged securityContext.
+  # If false: uses the built-in mock traffic simulator (zero-config default).
+  enabled: false
+  # If true: sets the container securityContext to privileged: true.
+  # If false and ebpf.enabled is true: uses fine-grained Linux capabilities instead.
+  privileged: false
+
+# ----------------------------------------------------------------------------
+# Container resource requests and limits.
+# The Go agent is lightweight. The 3D UI is served as compiled static assets.
+# Increase CPU limits if you are watching very large clusters (500+ pods).
+# ----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+# ----------------------------------------------------------------------------
+# Node selection, tolerations, and affinity for advanced scheduling control.
+# ----------------------------------------------------------------------------
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# ----------------------------------------------------------------------------
+# Additional environment variables injected into the Go agent container.
+# Use this to configure KUBECONFIG paths, cluster names, or feature flags.
+# ----------------------------------------------------------------------------
+extraEnv: []
+# - name: KUBEDIORAMA_CLUSTER_NAME
+#   value: "my-production-cluster"
+
+# ----------------------------------------------------------------------------
+# Pod security context applied at the pod level (runs as non-root by default).
+# Override in the container-level securityContext below for eBPF requirements.
+# ----------------------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: false  # Must be false when ebpf.privileged is true
+  fsGroup: 2000
+
+# ----------------------------------------------------------------------------
+# Labels and annotations added to all resources created by this chart.
+# ----------------------------------------------------------------------------
+commonLabels: {}
+commonAnnotations: {}

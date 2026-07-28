@@ -1,0 +1,30 @@
+apiVersion: v2
+name: kubediorama
+description: |
+  KubeDiorama (ChaosWeaver) — The Anti-Grafana.
+  A plug-and-play 3D physics-based Kubernetes visualizer and chaos simulator.
+  Renders your cluster as a living, breathing futuristic city. Stream live Pod
+  metrics, replay 10 minutes of cluster history via DVR, and execute Chaos Spells
+  (The Meteor, Black Hole, The Flood) with a single click.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - visualization
+  - chaos-engineering
+  - ebpf
+  - 3d
+  - webgl
+  - react-three-fiber
+  - monitoring
+home: https://github.com/kubediorama/kubediorama
+sources:
+  - https://github.com/kubediorama/kubediorama
+maintainers:
+  - name: KubeDiorama Maintainers
+    url: https://github.com/kubediorama/kubediorama
+annotations:
+  # Artifact Hub categories for discoverability
+  artifacthub.io/category: monitoring-logging
+  artifacthub.io/license: Apache-2.0

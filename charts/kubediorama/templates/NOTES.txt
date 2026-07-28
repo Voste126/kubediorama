@@ -1,0 +1,49 @@
+{{/*
+==============================================================================
+NOTES.txt — Displayed to the user immediately after `helm install` completes.
+This is the "60-Second Time to Wow" user experience.
+==============================================================================
+*/}}
+ 🌌 KubeDiorama (ChaosWeaver) has been deployed!
+ ──────────────────────────────────────────────────────────────
+
+ ✅  Release Name : {{ .Release.Name }}
+ ✅  Namespace    : {{ .Release.Namespace }}
+ ✅  Chaos Spells : {{ if .Values.enableChaos }}ENABLED (☄️ Meteor | 🕳️ Black Hole | 🌊 Flood){{ else }}DISABLED (read-only mode){{ end }}
+ ✅  eBPF Tracing : {{ if .Values.ebpf.enabled }}ENABLED{{ else }}DISABLED (using mock traffic simulator){{ end }}
+
+ ──────────────────────────────────────────────────────────────
+ 🚀 TO ACCESS THE 3D CLUSTER CITY (60 seconds or less):
+
+ 1️⃣  Port-forward the UI + WebSocket server to your local machine:
+
+     kubectl port-forward -n {{ .Release.Namespace }} \
+       svc/{{ include "kubediorama.fullname" . }} 8080:{{ .Values.service.port }}
+
+ 2️⃣  Open your browser to:
+
+     http://localhost:8080
+
+ Your Kubernetes cluster is now a living, breathing 3D city! 🏙️
+
+ ──────────────────────────────────────────────────────────────
+ ⚡ CHAOS SPELLS QUICK REFERENCE:
+{{- if .Values.enableChaos }}
+     ☄️  The Meteor   → Click a 3D Pod Mesh to delete it live from K8s
+     🕳️  Black Hole   → Click a Namespace District to apply NetworkPolicy
+     🌊  The Flood    → Click a 3D Pod Mesh to flood it with DDoS traffic
+{{- else }}
+     ⚠️  Chaos Spells are DISABLED. To enable:
+     helm upgrade {{ .Release.Name }} kubediorama/kubediorama \
+       --set enableChaos=true
+{{- end }}
+
+ ──────────────────────────────────────────────────────────────
+ 📺 DVR TIME TRAVEL:
+     Drag the bottom timeline slider to scrub back through
+     the last 10 minutes of your cluster's history!
+
+ ──────────────────────────────────────────────────────────────
+ 📖 Documentation : https://github.com/kubediorama/kubediorama
+ 🐛 Report Issues : https://github.com/kubediorama/kubediorama/issues
+ ──────────────────────────────────────────────────────────────

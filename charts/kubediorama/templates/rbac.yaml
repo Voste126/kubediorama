@@ -1,0 +1,160 @@
+# ==============================================================================
+# KubeDiorama — RBAC Manifests
+#
+# This file defines the Role-Based Access Control resources granting
+# KubeDiorama's Go agent daemon the exact Kubernetes privileges it needs to
+# function as a "Grand Chaos Architect": cluster visualizer, DVR buffer, and
+# optional chaos executor.
+#
+# SECURITY POSTURE OVERVIEW:
+# ─────────────────────────────────────────────────────────────────────────────
+# This is a ClusterRole (not a namespaced Role) because KubeDiorama must watch
+# resources across ALL namespaces simultaneously to render the full cluster city.
+# We follow the Principle of Least Privilege: permissions are split into two
+# tiers controlled by `values.yaml`:
+#
+#   Tier 1 — Always granted (required for visualization):
+#     READ/WATCH: pods, namespaces, deployments, replicasets, nodes, events
+#
+#   Tier 2 — Granted only when enableChaos: true (Chaos Spells):
+#     DELETE:   pods              (☄️  The Meteor — live pod eviction)
+#     CREATE/UPDATE/DELETE: networkpolicies (🕳️  Black Hole — network partition)
+#
+# Infrastructure engineers: review every verb here. None of these are
+# wildcards. If you disable enableChaos, Tier 2 rules are templated out.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# ServiceAccount
+# A dedicated identity for the KubeDiorama pod. All API server requests from
+# the agent daemon are authenticated using this ServiceAccount's token.
+# ------------------------------------------------------------------------------
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kubediorama.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubediorama.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+
+---
+# ------------------------------------------------------------------------------
+# ClusterRole — "kubediorama-visualizer"
+#
+# This ClusterRole grants the exact API group / resource / verb combinations
+# required by the Go daemon. It is intentionally NOT using wildcard ("*")
+# verbs or resources. Every single entry below is justified:
+#
+# pods (read + watch):
+#   The DVR ring buffer and Informer stream require continuous watch access
+#   to pods across all namespaces to render the 3D cluster city in real time.
+#
+# pods (delete) [Chaos: optional]:
+#   "The Meteor" Chaos Spell calls clientset.CoreV1().Pods().Delete().
+#   This is gated by enableChaos: true and should be disabled in production.
+#
+# nodes (get + list + watch):
+#   Required to render node resource capacity (CPU/Memory) in the 3D city.
+#   Nodes are cluster-scoped resources — no namespace scoping possible.
+#
+# namespaces (get + list + watch):
+#   Required to discover and render Namespace Districts (the floating slabs
+#   that group Pods by namespace in the 3D engine).
+#
+# deployments + replicasets (get + list + watch):
+#   Required for the planned Milestone 6+ Deployment-aware district rendering,
+#   showing ReplicaSet ownership chains as district zones.
+#
+# events (get + list + watch):
+#   Enables the DVR playback engine to replay warning events (OOMKills, etc.)
+#   alongside historical Pod snapshots in the temporal ring buffer.
+#
+# networkpolicies (create + update + delete) [Chaos: optional]:
+#   "The Black Hole" Chaos Spell dynamically creates NetworkPolicy objects
+#   to partition namespace-to-namespace traffic at the K8s control plane level.
+#   This is gated by enableChaos: true and must be disabled in production.
+# ------------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubediorama.fullname" . }}-role
+  labels:
+    {{- include "kubediorama.labels" . | nindent 4 }}
+rules:
+  # ── Tier 1: Visualization & DVR Engine (Always Active) ───────────────────
+
+  # Pods: The primary resource. The Informer watch stream feeds the DVR ring
+  # buffer and drives every 3D animation event (create, update, delete, phase).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # Nodes: Read node capacity for physical resource rendering.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Namespaces: Discover all namespaces to render Namespace Districts.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
+  # Events: Replay K8s warning events in the DVR temporal scrubber.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # Deployments + ReplicaSets: For ownership chain visualization.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Tier 2: Chaos Spells (Only when enableChaos: true) ───────────────────
+  {{- if .Values.enableChaos }}
+
+  # THE METEOR (☄️): Pod deletion — live Kubernetes eviction via the API.
+  # Without this verb, clicking "☄️ The Meteor" in the UI will silently fail.
+  # RISK: A misconfigured chaos session could delete production pods.
+  # MITIGATION: Scope this with a separate namespace-limited Role in production.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+
+  # THE BLACK HOLE (🕳️): NetworkPolicy CRUD — creates/removes namespace partitions.
+  # Without these verbs, clicking "🕳️ Black Hole" will fail silently.
+  # RISK: An overly broad NetworkPolicy could partition critical system traffic.
+  # MITIGATION: The agent labels all policies with app.kubernetes.io/managed-by=kubediorama
+  #             for easy identification and bulk cleanup.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+
+  {{- end }}
+  # ─────────────────────────────────────────────────────────────────────────
+
+---
+# ------------------------------------------------------------------------------
+# ClusterRoleBinding
+# Binds the ClusterRole above to the KubeDiorama ServiceAccount.
+# This is what activates the permissions at runtime.
+# ------------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubediorama.fullname" . }}-rolebinding
+  labels:
+    {{- include "kubediorama.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubediorama.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "kubediorama.fullname" . }}-role
+  apiGroup: rbac.authorization.k8s.io
