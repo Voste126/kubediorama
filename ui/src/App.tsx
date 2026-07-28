@@ -3,12 +3,13 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html, Float } from '@react-three/drei';
 import { useSpring, animated } from '@react-spring/three';
 import * as THREE from 'three';
-import { usePodStore, type Pod, type TrafficEvent } from './store';
+import { usePodStore, type Pod } from './store';
+import { DataParticle } from './DataParticle';
 import './App.css';
 
 /**
  * PodMesh Component
- * Dynamic 3D Pod representation scaling height with CPU and glow brightness with Memory.
+ * Renders Pod 3D geometry with dynamic scaling (CPU/Memory) and physical 3D glitch/jitter shaking on Error/OOMKilled.
  */
 interface PodMeshProps {
   pod: Pod;
@@ -35,23 +36,28 @@ const PodMesh: React.FC<PodMeshProps> = ({ pod, index, districtX, districtZ }) =
   const targetX = districtX + localX;
   const targetZ = districtZ + localZ;
 
-  // --------------------------------------------------------------------------
-  // Dynamic Core Scaling Metrics Math
-  // - Height (scale.y) scales linearly with CPU usage percentage (0 - 100%)
-  // - Glow (emissiveIntensity) scales linearly with Memory usage percentage (0 - 100%)
-  // --------------------------------------------------------------------------
+  // Detect Glitch / Error States (Error, OOMKilled, Failed)
+  const isError = ['error', 'oomkilled', 'oom', 'failed'].includes(pod.status.toLowerCase());
+
+  // Metrics Math
   const cpuPercent = pod.cpu ?? 35;
   const memPercent = pod.memory ?? 45;
 
-  const heightScale = 1.0 + (cpuPercent / 100) * 2.2; // Height ranges from 1.0 to 3.2 units
-  const glowIntensity = 0.8 + (memPercent / 100) * 2.8; // Glow intensity ranges from 0.8 to 3.6
+  const heightScale = 1.0 + (cpuPercent / 100) * 2.2;
+  const glowIntensity = isError ? 4.5 : 0.8 + (memPercent / 100) * 2.8;
 
   // Smooth @react-spring/three animation transitions
   const springProps = useSpring({
     scaleY: isStriking ? 0.0 : heightScale,
     scaleXZ: isStriking ? 0.0 : hovered ? 1.25 : 1.0,
     emissiveIntensity: isStriking ? 6.0 : hovered ? glowIntensity + 1.5 : glowIntensity,
-    color: isStriking ? '#ff0000' : pod.status.toLowerCase() === 'running' ? '#00f3ff' : '#ffb700',
+    color: isStriking
+      ? '#ff0000'
+      : isError
+      ? '#ff0055' // Glitch Red/Magenta
+      : pod.status.toLowerCase() === 'running'
+      ? '#00f3ff'
+      : '#ffb700',
     config: isStriking ? { mass: 1, tension: 300, friction: 15 } : { mass: 1, tension: 120, friction: 14 },
   });
 
@@ -66,14 +72,29 @@ const PodMesh: React.FC<PodMeshProps> = ({ pod, index, districtX, districtZ }) =
     }
   };
 
+  // --------------------------------------------------------------------------
+  // 3D Physical Glitch & Wireframe Shaking Animation
+  // If pod.status is Error or OOMKilled, physically jitter mesh on X/Z axes!
+  // --------------------------------------------------------------------------
   useFrame((_, delta) => {
     if (meshRef.current && !isStriking) {
-      meshRef.current.rotation.y += delta * 0.6;
+      if (isError) {
+        // Rapid physical glitch shaking on X and Z axes
+        const jitterX = (Math.random() - 0.5) * 0.22;
+        const jitterZ = (Math.random() - 0.5) * 0.22;
+        meshRef.current.position.x = targetX + jitterX;
+        meshRef.current.position.z = targetZ + jitterZ;
+        meshRef.current.rotation.y += delta * 3.5; // Rapid glitch rotation
+      } else {
+        meshRef.current.position.x = targetX;
+        meshRef.current.position.z = targetZ;
+        meshRef.current.rotation.y += delta * 0.6;
+      }
     }
   });
 
   return (
-    <Float speed={isStriking ? 0 : 1.5} rotationIntensity={0.15} floatIntensity={0.3} position={[targetX, 0.9, targetZ]}>
+    <Float speed={isStriking ? 0 : isError ? 4 : 1.5} rotationIntensity={isError ? 0.6 : 0.15} floatIntensity={0.3} position={[targetX, 0.9, targetZ]}>
       <animated.mesh
         ref={meshRef}
         scale-x={springProps.scaleXZ}
@@ -88,26 +109,31 @@ const PodMesh: React.FC<PodMeshProps> = ({ pod, index, districtX, districtZ }) =
       >
         <boxGeometry args={[1.6, 1.6, 1.6]} />
 
-        <animated.meshStandardMaterial
-          color={springProps.color}
-          emissive={springProps.color}
-          emissiveIntensity={springProps.emissiveIntensity}
-          roughness={0.15}
-          metalness={0.85}
-        />
+        {/* Dynamic Material: Wireframe for Error / OOMKilled states */}
+        {isError ? (
+          <meshBasicMaterial color="#ff0055" wireframe />
+        ) : (
+          <animated.meshStandardMaterial
+            color={springProps.color}
+            emissive={springProps.color}
+            emissiveIntensity={springProps.emissiveIntensity}
+            roughness={0.15}
+            metalness={0.85}
+          />
+        )}
 
         {/* Outer Wireframe Cage */}
-        <mesh scale={1.04}>
+        <mesh scale={1.06}>
           <boxGeometry args={[1.6, 1.6, 1.6]} />
-          <animated.meshBasicMaterial color={springProps.color} wireframe transparent opacity={0.3} />
+          <animated.meshBasicMaterial color={springProps.color} wireframe transparent opacity={isError ? 0.8 : 0.3} />
         </mesh>
 
         {/* Telemetry HTML Overlay Badge */}
         {!isStriking && (
           <Html position={[0, heightScale * 0.8 + 0.8, 0]} center distanceFactor={14} zIndexRange={[100, 0]}>
-            <div className={`pod-badge ${hovered ? 'badge-hover' : ''} ${activeSpell === 'meteor' ? 'meteor-target' : ''}`}>
+            <div className={`pod-badge ${hovered ? 'badge-hover' : ''} ${activeSpell === 'meteor' ? 'meteor-target' : ''} ${isError ? 'glitch-badge' : ''}`}>
               <div className="pod-header">
-                <span className="pod-icon">{activeSpell === 'meteor' ? '🎯' : '📦'}</span>
+                <span className="pod-icon">{isError ? '⚠️' : activeSpell === 'meteor' ? '🎯' : '📦'}</span>
                 <span className="pod-name">{pod.name}</span>
               </div>
 
@@ -142,87 +168,7 @@ const PodMesh: React.FC<PodMeshProps> = ({ pod, index, districtX, districtZ }) =
 };
 
 /**
- * DataParticle Component
- * Animates a glowing 3D network particle along a 3D Quadratic Bezier Curve between two Pods.
- */
-interface DataParticleProps {
-  event: TrafficEvent;
-  sourcePos: THREE.Vector3;
-  destPos: THREE.Vector3;
-}
-
-const DataParticle: React.FC<DataParticleProps> = ({ event, sourcePos, destPos }) => {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const progressRef = useRef(0);
-  const removeTrafficEvent = usePodStore((state) => state.removeTrafficEvent);
-
-  // --------------------------------------------------------------------------
-  // 3D Math: Quadratic Bezier Curve Calculation
-  // P0 = Start Position (Source Pod)
-  // P2 = End Position (Destination Pod)
-  // P1 = Control Arc Point floating vertically in space between P0 and P2
-  // --------------------------------------------------------------------------
-  const curve = useMemo(() => {
-    const midX = (sourcePos.x + destPos.x) / 2;
-    const midZ = (sourcePos.z + destPos.z) / 2;
-    const distance = sourcePos.distanceTo(destPos);
-    const arcHeight = Math.max(sourcePos.y, destPos.y) + 4.5 + Math.min(distance * 0.25, 8.0);
-
-    const P0 = sourcePos.clone();
-    const P1 = new THREE.Vector3(midX, arcHeight, midZ); // Arc control point
-    const P2 = destPos.clone();
-
-    return new THREE.QuadraticBezierCurve3(P0, P1, P2);
-  }, [sourcePos, destPos]);
-
-  // Curve points for visual particle line trail
-  const linePoints = useMemo(() => curve.getPoints(30), [curve]);
-
-  const isFast = event.speed === 'fast';
-  const color = isFast ? '#00f3ff' : '#ff0055'; // Cyan Blue for fast, Red for slow
-
-  // Animate particle position along Bezier curve
-  useFrame((_, delta) => {
-    // Fast particle completes in ~1.1s, Slow particle completes in ~2.5s
-    const speedMultiplier = isFast ? 0.9 : 0.4;
-    progressRef.current += delta * speedMultiplier;
-
-    if (progressRef.current >= 1.0) {
-      removeTrafficEvent(event.id);
-      return;
-    }
-
-    if (meshRef.current) {
-      const currentPoint = curve.getPoint(progressRef.current);
-      meshRef.current.position.copy(currentPoint);
-    }
-  });
-
-  return (
-    <group>
-      {/* Visual Arc Trail Line */}
-      <line>
-        <bufferGeometry attach="geometry" onUpdate={(self) => self.setFromPoints(linePoints)} />
-        <lineBasicMaterial color={color} transparent opacity={0.35} linewidth={2} />
-      </line>
-
-      {/* Moving Luminescent Particle Sphere */}
-      <mesh ref={meshRef} position={[sourcePos.x, sourcePos.y, sourcePos.z]}>
-        <sphereGeometry args={[isFast ? 0.35 : 0.45, 16, 16]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={3.5}
-          roughness={0.1}
-        />
-        <pointLight color={color} intensity={2.0} distance={5} />
-      </mesh>
-    </group>
-  );
-};
-
-/**
- * NamespaceDistrict Platform Component
+ * NamespaceDistrict Component
  */
 interface NamespaceDistrictProps {
   namespace: string;
@@ -234,25 +180,21 @@ interface NamespaceDistrictProps {
 const NamespaceDistrict: React.FC<NamespaceDistrictProps> = ({ namespace, districtX, districtZ, pods }) => {
   return (
     <group position={[districtX, 0, districtZ]}>
-      {/* Base Platform */}
       <mesh position={[0, -0.2, 0]}>
         <boxGeometry args={[12, 0.4, 12]} />
         <meshStandardMaterial color="#0c1425" roughness={0.1} metalness={0.9} />
       </mesh>
 
-      {/* Grid Overlay */}
       <mesh position={[0, 0.01, 0]}>
         <planeGeometry args={[11.8, 11.8]} />
         <meshBasicMaterial color="#00f3ff" wireframe transparent opacity={0.15} />
       </mesh>
 
-      {/* Rim Edge */}
       <mesh position={[0, -0.01, 0]}>
         <boxGeometry args={[12.2, 0.42, 12.2]} />
         <meshBasicMaterial color="#00f3ff" wireframe transparent opacity={0.25} />
       </mesh>
 
-      {/* District Label */}
       <Html position={[0, 0.5, -6]} center distanceFactor={18}>
         <div className="district-label">
           <span className="district-icon">🏛️</span>
@@ -261,7 +203,6 @@ const NamespaceDistrict: React.FC<NamespaceDistrictProps> = ({ namespace, distri
         </div>
       </Html>
 
-      {/* Pods */}
       {pods.map((pod, pIdx) => (
         <PodMesh
           key={`${pod.namespace}-${pod.name}`}
@@ -282,9 +223,6 @@ const Scene: React.FC = () => {
   const pods = usePodStore((state) => state.pods);
   const trafficEvents = usePodStore((state) => state.trafficEvents);
 
-  // --------------------------------------------------------------------------
-  // 3D Math: Build Namespace District Layout and Pod Position Map
-  // --------------------------------------------------------------------------
   const { namespaceMap, uniqueNamespaces, podWorldPositions } = useMemo(() => {
     const nsMap = pods.reduce((acc, pod) => {
       if (!acc[pod.namespace]) {
@@ -328,7 +266,6 @@ const Scene: React.FC = () => {
 
       <gridHelper args={[80, 80, '#00ffff', '#101726']} position={[0, -0.4, 0]} />
 
-      {/* Render Namespace District Islands */}
       {uniqueNamespaces.map((ns, dIdx) => {
         const cols = 2;
         const col = dIdx % cols;
@@ -347,7 +284,6 @@ const Scene: React.FC = () => {
         );
       })}
 
-      {/* Render Traffic Light Trail Particles along 3D Bezier Curves */}
       {trafficEvents.map((ev) => {
         const srcPos = podWorldPositions[ev.sourcePod];
         const dstPos = podWorldPositions[ev.destPod];
@@ -364,7 +300,6 @@ const Scene: React.FC = () => {
         );
       })}
 
-      {/* Empty State */}
       {pods.length === 0 && (
         <Html position={[0, 2, 0]} center>
           <div className="empty-state">
@@ -386,8 +321,15 @@ const Scene: React.FC = () => {
   );
 };
 
+// Timestamp formatting helper (HH:MM:SS)
+const formatTime = (timestamp: number) => {
+  if (!timestamp) return '00:00:00';
+  const d = new Date(timestamp * 1000);
+  return d.toTimeString().split(' ')[0];
+};
+
 export default function App() {
-  const { pods, trafficEvents, isConnected, activeSpell, setActiveSpell, connect } = usePodStore();
+  const { pods, trafficEvents, isConnected, isLive, timeline, activeSpell, setActiveSpell, connect, scrubTo, resumeLive } = usePodStore();
 
   useEffect(() => {
     connect();
@@ -401,12 +343,18 @@ export default function App() {
     }
   };
 
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Number(e.target.value);
+    scrubTo(val);
+  };
+
   return (
     <div className={`app-container ${activeSpell === 'meteor' ? 'meteor-mode-active' : ''}`}>
+      {/* Top Header / HUD */}
       <header className="hud-header">
         <div className="brand">
           <h1>KubeDiorama</h1>
-          <span className="subtitle">Milestone 3: Data Flow & Live Metrics</span>
+          <span className="subtitle">Milestone 4: Temporal DVR & Glitch States</span>
         </div>
 
         <div className="hud-stats">
@@ -435,6 +383,7 @@ export default function App() {
         </div>
       )}
 
+      {/* 3D Canvas Viewport */}
       <main className="canvas-wrapper">
         <Canvas camera={{ position: [0, 16, 24], fov: 45 }}>
           <color attach="background" args={['#050811']} />
@@ -443,17 +392,46 @@ export default function App() {
         </Canvas>
       </main>
 
-      <footer className="spells-toolbar-container">
-        <div className="spells-toolbar">
-          <span className="toolbar-title">⚡ Chaos Spells</span>
+      {/* Bottom Floating Control Panel (Timeline DVR Scrubber + Spells Toolbar) */}
+      <footer className="hud-bottom-panel">
+        {/* Temporal DVR Timeline Scrubber Overlay */}
+        <div className="dvr-timeline-bar">
           <button
-            className={`spell-btn ${activeSpell === 'meteor' ? 'active-spell' : ''}`}
-            onClick={toggleMeteorSpell}
-            title="Launch a Meteor strike to delete a Pod from the Kubernetes cluster"
+            className={`live-toggle-btn ${isLive ? 'is-live' : 'is-dvr'}`}
+            onClick={isLive ? undefined : resumeLive}
           >
-            <span className="spell-icon">☄️</span>
-            <span className="spell-name">The Meteor</span>
+            <span className="live-dot"></span>
+            <span>{isLive ? 'LIVE' : 'DVR PAUSED'}</span>
           </button>
+
+          <span className="timeline-time">{formatTime(timeline.min)}</span>
+
+          <input
+            type="range"
+            className="timeline-slider"
+            min={timeline.min || 0}
+            max={timeline.max || 100}
+            value={timeline.current || 0}
+            onChange={handleSliderChange}
+          />
+
+          <span className="timeline-time active-ts">{formatTime(timeline.current)}</span>
+          <span className="timeline-time">{formatTime(timeline.max)}</span>
+        </div>
+
+        {/* Chaos Spells Toolbar */}
+        <div className="spells-toolbar-container">
+          <div className="spells-toolbar">
+            <span className="toolbar-title">⚡ Chaos Spells</span>
+            <button
+              className={`spell-btn ${activeSpell === 'meteor' ? 'active-spell' : ''}`}
+              onClick={toggleMeteorSpell}
+              title="Launch a Meteor strike to delete a Pod from the Kubernetes cluster"
+            >
+              <span className="spell-icon">☄️</span>
+              <span className="spell-name">The Meteor</span>
+            </button>
+          </div>
         </div>
       </footer>
     </div>
