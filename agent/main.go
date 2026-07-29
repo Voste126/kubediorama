@@ -7,7 +7,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -18,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -538,24 +538,28 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+func getKubeClient() (*kubernetes.Clientset, error) {
+	// 1. Try to authenticate from INSIDE the cluster (Docker/K8s)
+	config, err := rest.InClusterConfig()
+
+	if err != nil {
+		// 2. Fallback to OUTSIDE the cluster (Local testing)
+		home := homedir.HomeDir()
+		kubeconfig := filepath.Join(home, ".kube", "config")
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return kubernetes.NewForConfig(config)
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	log.Println("⚡ Starting KubeDiorama Go Agent Backend (Milestone 5 - eBPF & Advanced Chaos)...")
 
 	// 1. Authenticate with Kubernetes cluster
-	var kubeconfig string
-	if envKubeconfig := os.Getenv("KUBECONFIG"); envKubeconfig != "" {
-		kubeconfig = envKubeconfig
-	} else if home := homedir.HomeDir(); home != "" {
-		kubeconfig = filepath.Join(home, ".kube", "config")
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		log.Fatalf("Failed to build kubeconfig from %s: %v", kubeconfig, err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := getKubeClient()
 	if err != nil {
 		log.Fatalf("Failed to create Kubernetes clientset: %v", err)
 	}
